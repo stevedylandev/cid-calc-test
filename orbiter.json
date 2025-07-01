@@ -1,0 +1,6 @@
+{
+  "siteId": "ca0cc230-e0f2-4ac4-9ddf-68071df31355",
+  "domain": "cid-calc-test",
+  "buildCommand": "bun run build",
+  "buildDir": "dist"
+}
