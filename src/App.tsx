@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import {
 	Upload,
 	FileText,
@@ -17,23 +17,23 @@ const HeliaApp = () => {
 	const [error, setError] = useState("");
 	const [heliaInstance, setHeliaInstance] = useState<any>(null);
 
-	// Initialize Helia instance
-	const initializeHelia = useCallback(async () => {
-		try {
-			// Import the required modules
+	// Initialize Helia instance on component mount
+	useEffect(() => {
+		const initHelia = async () => {
+			try {
+				console.log("Creating Helia instance...");
+				const helia = await createHelia();
+				const fs = unixfs(helia);
 
-			console.log("Creating Helia instance...");
-			const helia = await createHelia();
-			const fs = unixfs(helia);
+				setHeliaInstance({ helia, fs });
+				console.log("Helia instance created successfully");
+			} catch (err) {
+				console.error("Failed to initialize Helia:", err);
+				setError(`Failed to initialize Helia: ${err}`);
+			}
+		};
 
-			setHeliaInstance({ helia, fs });
-			console.log("Helia instance created successfully");
-			return { helia, fs };
-		} catch (err) {
-			console.error("Failed to initialize Helia:", err);
-			setError(`Failed to initialize Helia: ${err}`);
-			return null;
-		}
+		initHelia();
 	}, []);
 
 	// Handle folder/file selection
@@ -44,7 +44,7 @@ const HeliaApp = () => {
 		setError("");
 	}, []);
 
-	// Process files and calculate CIDs
+	// Process files and calculate CIDs (Kubo-compatible approach)
 	const calculateCIDs = useCallback(async () => {
 		if (files.length === 0) {
 			setError("Please select files first");
@@ -56,14 +56,15 @@ const HeliaApp = () => {
 		setResults([]);
 
 		try {
-			// Initialize Helia if not already done
-			let heliaData = heliaInstance;
-			if (!heliaData) {
-				heliaData = await initializeHelia();
-				if (!heliaData) return;
+			// Check if Helia is initialized
+			if (!heliaInstance) {
+				setError(
+					"Helia is still initializing. Please wait a moment and try again.",
+				);
+				return;
 			}
 
-			const { fs } = heliaData;
+			const { fs } = heliaInstance;
 
 			// Convert File objects to the format expected by Helia
 			const fileEntries = await Promise.all(
@@ -82,18 +83,47 @@ const HeliaApp = () => {
 				fileEntries.map((f) => f.path),
 			);
 
-			// Use addAll to process all files
+			// Kubo-compatible settings for identical CIDs
+			const kuboCompatibleOptions = {
+				cidVersion: 1, // Modern CID version (Kubo default with --cid-version=1)
+				rawLeaves: true, // Raw leaves enabled (Kubo default for CIDv1)
+				trickle: false, // Merkle DAG structure (Kubo default)
+				chunkerOptions: {
+					maxChunkSize: 262144, // 256KB chunks (Kubo default: size-262144)
+				},
+				// Directory wrapping when needed
+				wrapWithDirectory:
+					fileEntries.length > 1 ||
+					fileEntries.some((f) => f.path.includes("/")),
+			};
+
 			const importResults = [];
-			for await (const entry of fs.addAll(fileEntries, {
-				rawLeaves: false,
-			})) {
+
+			if (fileEntries.length === 1 && !fileEntries[0].path.includes("/")) {
+				// Single file - use addBytes for better Kubo compatibility
+				const entry = fileEntries[0];
+				const cid = await fs.addBytes(entry.content, kuboCompatibleOptions);
 				importResults.push({
 					path: entry.path,
-					cid: entry.cid.toString(),
-					size: entry.size,
-					type: entry.type || "file",
+					cid: cid.toString(),
+					size: entry.content.length,
+					type: "file",
 				});
-				console.log("Added:", entry.path, "CID:", entry.cid.toString());
+				console.log("Added single file:", entry.path, "CID:", cid.toString());
+			} else {
+				// Multiple files or directory structure - use addAll
+				for await (const entry of fs.addAll(
+					fileEntries,
+					kuboCompatibleOptions,
+				)) {
+					importResults.push({
+						path: entry.path,
+						cid: entry.cid.toString(),
+						size: entry.size,
+						type: entry.type || "file",
+					});
+					console.log("Added:", entry.path, "CID:", entry.cid.toString());
+				}
 			}
 
 			setResults(importResults);
@@ -103,7 +133,7 @@ const HeliaApp = () => {
 		} finally {
 			setIsProcessing(false);
 		}
-	}, [files, heliaInstance, initializeHelia]);
+	}, [files, heliaInstance]);
 
 	return (
 		<div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-4">
@@ -116,10 +146,43 @@ const HeliaApp = () => {
 						</h1>
 					</div>
 
-					<p className="text-gray-600 mb-6">
+					<p className="text-gray-600 mb-4">
 						Upload files or folders to calculate their IPFS Content Identifiers
-						(CIDs) using Helia UnixFS.
+						(CIDs) using Helia UnixFS with Kubo-compatible settings.
 					</p>
+
+					{/* Kubo Compatibility Info */}
+					<div className="bg-green-50 border border-green-200 rounded-lg p-4 mb-6">
+						<h3 className="font-semibold text-green-800 mb-2">
+							🔧 Kubo-Compatible Settings
+						</h3>
+						<div className="text-sm text-green-700 grid grid-cols-1 md:grid-cols-2 gap-2">
+							<div>
+								• <strong>CID Version:</strong> v1 (modern)
+							</div>
+							<div>
+								• <strong>Raw Leaves:</strong> Enabled
+							</div>
+							<div>
+								• <strong>Chunk Size:</strong> 256KB (Kubo default)
+							</div>
+							<div>
+								• <strong>DAG Type:</strong> Merkle DAG
+							</div>
+							<div>
+								• <strong>Hash Function:</strong> SHA-256
+							</div>
+							<div>
+								• <strong>Chunker:</strong> Fixed size
+							</div>
+						</div>
+						<p className="text-xs text-green-600 mt-2">
+							Equivalent to:{" "}
+							<code className="bg-green-100 px-1 rounded">
+								ipfs add --cid-version=1 --raw-leaves --chunker=size-262144
+							</code>
+						</p>
+					</div>
 
 					<div className="space-y-4">
 						{/* File Input */}
@@ -223,9 +286,8 @@ const HeliaApp = () => {
 						<p className="text-red-600 mt-1">{error}</p>
 						<div className="mt-3 text-sm text-red-600">
 							<p>
-								<strong>Note:</strong> This demo uses CDN imports which may not
-								work in all environments. For production use, install the
-								packages locally:
+								<strong>Note:</strong> Make sure you have installed the required
+								packages:
 							</p>
 							<code className="block mt-1 bg-red-100 p-2 rounded">
 								npm install helia @helia/unixfs
